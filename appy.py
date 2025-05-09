@@ -302,3 +302,52 @@ def processar_emails(caminho_excel, caminho_html, caminho_anexos):
                 contexto[var] = aplicar_formatacao(valor, formato)  # *** Indentation corrected here ***
 
             corpo_html = template.render(contexto)
+            anexos_para_email = []
+            if caminho_anexos:
+                for nome_coluna in linha_exemplo.index:
+                    if nome_coluna.upper().startswith("ANEXO"):
+                        nome_arquivo = linha_exemplo.get(nome_coluna)
+                        if campo_valido(nome_arquivo):
+                            caminho_completo = os.path.join(caminho_anexos, nome_arquivo)
+                            if os.path.exists(caminho_completo):
+                                anexos_para_email.append(caminho_completo)
+                            else:
+                                append_log(f"{id_referencia}: anexo não encontrado: {caminho_completo}")
+
+            try:
+                enviar_email_outlook(assunto, emails_unicos, corpo_html, anexos_para_email, email_remetente)
+                append_log(f"{id_referencia}: e-mail enviado para {', '.join(emails_unicos)}")
+                total_enviados += 1
+            except Exception as e:
+                append_log(f"{id_referencia}: falha ao enviar e-mail: {e}")
+
+    append_log(f"\n✅ Processo concluído. Total de e-mails enviados: {total_enviados}, total ignorados: {total_ignorados}.")
+    return total_enviados, total_ignorados
+
+def main():
+    st.title("Disparo de E-mails de Cobrança")
+
+    caminho_base = obter_caminho_base()
+    if not caminho_base:
+        return
+
+    MODO = "02. Desenvolvimento"  # Tornar isso configurável via Streamlit se necessário
+    caminho_excel_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "Parametros_Envio_Almox.xlsx")
+    caminho_html_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "HTML")
+    caminho_anexos_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "Arquivos para envio")
+
+    caminho_excel = st.sidebar.text_input("Caminho do arquivo Excel:", caminho_excel_padrao)
+    caminho_html = st.sidebar.text_input("Caminho da pasta HTML:", caminho_html_padrao)
+    caminho_anexos = st.sidebar.text_input("Caminho da pasta de anexos (opcional):", caminho_anexos_padrao)
+
+    if st.button("Iniciar Envio de E-mails"):
+        if caminho_excel and os.path.exists(caminho_excel) and caminho_html and os.path.exists(caminho_html):
+            with st.spinner("Processando e enviando e-mails..."):
+                enviados, ignorados = processar_emails(caminho_excel, caminho_html, caminho_anexos)
+            st.success(f"Envio concluído! {enviados} e-mails enviados, {ignorados} operações ignoradas.")
+        else:
+            st.error("Por favor, verifique os caminhos dos arquivos.")
+
+if __name__ == "__main__":
+    main()
+            
