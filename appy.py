@@ -298,7 +298,23 @@ def main():
             processar_emails(caminho_excel, caminho_html,
                              caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp)
            else:
-               st.error("Por favor, forneça os caminhos para o arquivo Excel e a pasta HTML.")
+               for id_operacao, grupo in grupos:
+               # ... outras linhas de código ...
 
+               if exige_iteracao:
+                   contexto["series"] = preparar_series(grupo, vars_loop)
+               else:
+                   # A linha abaixo (originalmente linha 300) deve estar indentada aqui
+                   for col in df.columns:
+                       valor = df.iloc[0].get(col)
+                       formato = None
+                       contexto[col] = aplicar_formatacao(valor, formato)
+
+               try:
+                   corpo_html = template.render(contexto)
+               except Exception as e:
+                   append_log(f"Erro ao renderizar template para ID {id_operacao} em {nome_aba}: {e}")
+                   total_ignorados += 1
+                   continue
    if __name__ == "__main__":
        main()
