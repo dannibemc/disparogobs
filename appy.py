@@ -168,7 +168,7 @@ def preparar_series(grupo, campos_necessarios):
             valor = linha.get(coluna_compat, "") if coluna_compat else ""
             valor_formatado = aplicar_formatacao(valor, formato)
             dados_serie[campo] = valor_formatado if campo_valido(valor_formatado) else ""
-    series.append(dados_serie)
+        series.append(dados_serie)
     return series
 
 def processar_emails(caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp):
@@ -295,26 +295,10 @@ def main():
 
     if st.button("Iniciar Processamento"):
         if caminho_excel and caminho_html and remetente and senha and servidor_smtp and porta_smtp:
-            processar_emails(caminho_excel, caminho_html,
-                             caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp)
-           else:
-               for id_operacao, grupo in grupos:
-               # ... outras linhas de código ...
+            processar_emails(caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp)
+        else:
+            st.error("Por favor, forneça os caminhos para o arquivo Excel, pasta HTML, seu e-mail, senha, servidor SMTP e porta SMTP.")
 
-               if exige_iteracao:
-                   contexto["series"] = preparar_series(grupo, vars_loop)
-               else:
-                   # A linha abaixo (originalmente linha 300) deve estar indentada aqui
-                   for col in df.columns:
-                       valor = df.iloc[0].get(col)
-                       formato = None
-                       contexto[col] = aplicar_formatacao(valor, formato)
+if __name__ == "__main__":
+    main()
 
-               try:
-                   corpo_html = template.render(contexto)
-               except Exception as e:
-                   append_log(f"Erro ao renderizar template para ID {id_operacao} em {nome_aba}: {e}")
-                   total_ignorados += 1
-                   continue
-   if __name__ == "__main__":
-       main()
