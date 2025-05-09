@@ -5,6 +5,11 @@ import re
 from datetime import datetime, timedelta
 import jinja2
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 # Configuração do logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -99,10 +104,36 @@ def detectar_variaveis_completas_template_jinja(template_str):
         variaveis_loop.update(matches)
     return vars_globais, variaveis_loop
 
-# *** IMPORTANT CHANGE: Removed win32com import and function ***
-# The Outlook functionality is not compatible with Streamlit Cloud.
-# If you need it for local use, keep the original function but
-# conditionally execute it (see main() below).
+def enviar_email_smtp(assunto, destinatarios, corpo_html, remetente, senha, servidor_smtp, porta_smtp, anexos=None):
+    msg = MIMEMultipart()
+    msg['From'] = remetente
+    msg['To'] = ", ".join(destinatarios)
+    msg['Subject'] = assunto
+
+    msg.attach(MIMEText(corpo_html, 'html'))  # Use 'html' for HTML content
+
+    if anexos:
+        for anexo in anexos:
+            try:
+                with open(anexo, "rb") as arquivo_anexo:
+                    parte_anexo = MIMEBase('application', 'octet-stream')
+                    parte_anexo.set_payload(arquivo_anexo.read())
+                    encoders.encode_base64(parte_anexo)
+                    parte_anexo.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(anexo)}"')
+                    msg.attach(parte_anexo)
+            except Exception as e:
+                logging.error(f"Erro ao anexar {anexo}: {e}")
+
+    try:
+        servidor = smtplib.SMTP(servidor_smtp, porta_smtp)
+        servidor.starttls()  # Secure the connection
+        servidor.login(remetente, senha)
+        servidor.sendmail(remetente, destinatarios, msg.as_string())
+        servidor.quit()
+        logging.info(f"E-mail enviado para: {destinatarios}")
+    except Exception as e:
+        logging.error(f"Erro ao enviar e-mail via SMTP: {e}")
+        st.error(f"Erro ao enviar e-mail: {e}")
 
 def deve_enviar_email(data_vencimento, data_hoje, dias_notificacao, recorrencia=None, dias_semana_validos=None):
     datas_notificacao = [data_vencimento - timedelta(days=d) for d in dias_notificacao if d >= 0]
@@ -137,10 +168,10 @@ def preparar_series(grupo, campos_necessarios):
             valor = linha.get(coluna_compat, "") if coluna_compat else ""
             valor_formatado = aplicar_formatacao(valor, formato)
             dados_serie[campo] = valor_formatado if campo_valido(valor_formatado) else ""
-        series.append(dados_serie)
+    series.append(dados_serie)
     return series
 
-def processar_emails(caminho_excel, caminho_html, caminho_anexos):
+def processar_emails(caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp):
     try:
         planilhas = pd.read_excel(caminho_excel, sheet_name=None)
     except FileNotFoundError:
@@ -188,126 +219,66 @@ def processar_emails(caminho_excel, caminho_html, caminho_anexos):
             append_log(f"Operação {nome_aba} não encontrada na aba 'dados das operações'. Ignorado.")
             total_ignorados += 1
             continue
+
         dados_fixos = dados_fixos_df.iloc[0].to_dict()
+        assunto = dados_fixos.get("ASSUNTO", f"Notificação de Operação - {nome_aba}")
+        dias_notificacao = [int(d) for d in str(dados_fixos.get("DIAS_NOTIFICACAO", "0")).split(",") if str(d).strip().isdigit()]
+        recorrencia = dados_fixos.get("RECORRENCIA")
+        recorrencia = int(recorrencia) if pd.notna(recorrencia) and str(recorrencia).strip().isdigit() else None
+        dias_semana_validos_str = dados_fixos.get("DIAS_SEMANA_VALIDOS")
+        dias_semana_validos = [int(d) for d in str(dias_semana_validos_str).split(",") if str(d).strip().isdigit()] if pd.notna(dias_semana_validos_str) else None
 
-        email_remetente = dados_fixos.get("E-MAILS_LEVERAGE", "").strip()
-        if not campo_valido(email_remetente):
-            append_log(f"{nome_aba}: remetente ('E-MAILS_LEVERAGE') ausente ou inválido. Ignorado.")
-            total_ignorados += 1
-            continue
+        grupos = df.groupby("ID") if exige_iteracao else [("", df)]
 
-        dias_raw = dados_fixos.get("DIAS_COBRANÇA", "")
-        try:
-            dias_notificacao = [int(d.strip()) for d in str(dias_raw).split(";") if d.strip().lstrip("-").isdigit()]
-        except ValueError:
-            append_log(f"{nome_aba}: valor inválido na coluna 'DIAS_COBRANÇA'. Ignorado.")
-            total_ignorados += 1
-            continue
+        for id_operacao, grupo in grupos:
+            linha_principal = grupo.iloc[0]
+            data_vencimento = linha_principal.get("DATA_VENCIMENTO")
+            email = linha_principal.get("E-MAIL")
 
-        recorrencia = None
-        try:
-            valor = dados_fixos.get("RECORRENCIA", "")
-            if campo_valido(valor):
-                recorrencia = int(float(valor))
-        except ValueError:
-            append_log(f"{nome_aba}: valor inválido na coluna 'RECORRENCIA'.")
-
-        dias_semana_validos = []
-        try:
-            dia_semana_raw = dados_fixos.get("DIA_DA_SEMANA", "")
-            dias_semana_validos = [int(float(parte.strip())) for parte in str(dia_semana_raw).split(";") if parte.strip()]
-        except ValueError:
-            append_log(f"{nome_aba}: valor inválido na coluna 'DIA_DA_SEMANA'.")
-
-        agrupador = df.groupby("ID") if exige_iteracao else df.iterrows()
-        for k, grupo in agrupador:
-            grupo = grupo if exige_iteracao else pd.DataFrame([grupo])
-            linha_exemplo = grupo.iloc[0]
-            id_referencia = f"ID {k}" if exige_iteracao else f"linha {grupo.index[0] + 2}"
-
-            assunto = linha_exemplo.get("ASSUNTO_EMAIL", "")
-            if not campo_valido(assunto):
-                append_log(f"{id_referencia}: assunto do e-mail não informado. Ignorado.")
+            if not campo_valido(data_vencimento) or not campo_valido(email):
+                append_log(f"Dados insuficientes para ID {id_operacao} em {nome_aba}. Ignorado.")
                 total_ignorados += 1
                 continue
 
-            todos_emails = sum([extrair_destinatarios(linha.get("EMAIL", ""), dados_fixos) for _, linha in grupo.iterrows()], [])
-            emails_unicos = list({e.lower(): e for e in todos_emails if campo_valido(e)}.values())
-            if not todos_emails:
-                append_log(f"{id_referencia}: sem destinatários válidos. Ignorado.")
+            data_vencimento = pd.to_datetime(data_vencimento).date()
+            if not deve_enviar_email(data_vencimento, data_hoje, dias_notificacao, recorrencia, dias_semana_validos):
+                append_log(f"Notificação para ID {id_operacao} em {nome_aba} não necessária hoje. Ignorado.")
                 total_ignorados += 1
                 continue
 
-            if all(str(linha.get("PAGAMENTO_REALIZADO", "")).strip().lower() == "sim" for _, linha in grupo.iterrows()):
-                append_log(f"{id_referencia}: pagamento já realizado. Ignorado.")
+            destinatarios = extrair_destinatarios(email, dados_fixos)
+            if not destinatarios:
+                append_log(f"Sem destinatários válidos para ID {id_operacao} em {nome_aba}. Ignorado.")
                 total_ignorados += 1
                 continue
 
-            if not exige_iteracao:
-                coluna_venc = next((col for col in grupo.columns if col.upper().startswith("DATA_VENCIMENTO")), None)
-                if coluna_venc:
-                    try:
-                        data_venc = pd.to_datetime(grupo.iloc[0][coluna_venc], dayfirst=True).date()
-                        if not deve_enviar_email(data_venc, data_hoje, dias_notificacao, recorrencia, dias_semana_validos):
-                            append_log(f"{id_referencia}: fora do calendário. Ignorado.")
-                            total_ignorados += 1
-                            continue
-                    except (ValueError, TypeError) as e:
-                        append_log(f"{id_referencia}: erro ao processar data de vencimento: {e}. Ignorado.")
-                        total_ignorados += 1
-                        continue
-
-            coluna_venc = next((col for col in grupo.columns if col.upper().startswith("DATA_VENCIMENTO")), None)
-            if not coluna_venc:
-                append_log(f"{id_referencia}: coluna de vencimento não encontrada. Ignorado.")
-                total_ignorados += 1
-                continue
-
-            contexto = {}
+            contexto = dados_fixos.copy()
             for var in vars_globais:
-                if var.startswith("s."):
-                    continue
-                nome_base, _, sufixo = var.rpartition('_')
-                formato = sufixo.upper() if sufixo.upper() in {'M', 'D', 'S'} else None
-                nome_busca = nome_base if formato else var
-                col_match = next((col for col in linha_exemplo.index if col.strip().lower() == var.lower()), None)
-                if not col_match:
-                    col_match = next((col for col in linha_exemplo.index if col.strip().lower().startswith(nome_busca.lower())), None)
-                if not col_match:
-                    col_match = next((col for col in dados_fixos if col.strip().lower() == var.lower()), None)
-                if not col_match:
-                    col_match = next((col for col in dados_fixos if col.strip().lower().startswith(nome_busca.lower())), None)
-                valor = linha_exemplo.get(col_match, dados_fixos.get(col_match, '')) if col_match else ''
-                contexto[var] = aplicar_formatacao(valor, formato)  # Corrected indentation
+                contexto[var] = aplicar_formatacao(dados_fixos.get(var), None)
 
-            corpo_html = template.render(contexto)
+            if exige_iteracao:
+                contexto["series"] = preparar_series(grupo, vars_loop)
+            else:
+                for col in df.columns:
+                    valor = df.iloc[0].get(col)
+                    formato = None
+                    contexto[col] = aplicar_formatacao(valor, formato)
 
-            anexos_para_email = []
-            if caminho_anexos:
-                for nome_coluna in linha_exemplo.index:
-                    if nome_coluna.upper().startswith("ANEXO"):
-                        nome_arquivo = linha_exemplo.get(nome_coluna)
-                        if campo_valido(nome_arquivo):
-                            caminho_completo = os.path.join(caminho_anexos, nome_arquivo)
-                            if os.path.exists(caminho_completo):
-                                anexos_para_email.append(caminho_completo)
-                            else:
-                                append_log(f"{id_referencia}: anexo não encontrado: {caminho_completo}")
+            try:
+                corpo_html = template.render(contexto)
+            except Exception as e:
+                append_log(f"Erro ao renderizar template para ID {id_operacao} em {nome_aba}: {e}")
+                total_ignorados += 1
+                continue
 
-            # *** IMPORTANT CHANGE: Removed email sending ***
-            # The Outlook functionality is not compatible with Streamlit Cloud.
-            # If you need it for local use, uncomment the lines below and
-            # conditionally execute them (see main() below).
-            # try:# try
-            #       enviar_email_outlook(assunto, emails_unicos, corpo_html, anexos_para_email, email_remetente)
-            #       append_log(f"✅ E-mail enviado para: {emails_unicos}")
-            #       total_enviados += 1
-            #   except Exception as e:
-            #       append_log(f"❌ Falha ao enviar e-mail para {emails_unicos}: {e}")
-            #       st.error(f"Erro ao enviar email para {emails_unicos}. Verifique o log.")
-            #       total_ignorados += 1 # Consider failure as ignored for total count
+            try:
+                enviar_email_smtp(assunto, destinatarios, corpo_html, remetente, senha, servidor_smtp, porta_smtp, caminho_anexos)
+                total_enviados += 1
+                append_log(f"E-mail enviado para ID {id_operacao} em {nome_aba} para: {', '.join(destinatarios)}")
+            except Exception as e:
+                append_log(f"Erro ao enviar e-mail para ID {id_operacao} em {nome_aba}: {e}")
 
-    st.success(f"Processamento concluído. Emails enviados: {total_enviados}, Emails ignorados: {total_ignorados}")
+    st.success(f"Processamento concluído. Emails enviados: {total_enviados} | Emails ignorados: {total_ignorados}")
 
 def main():
     st.title("Processamento de E-mails Automatizado")
@@ -316,28 +287,18 @@ def main():
     caminho_html = st.text_input("Caminho da Pasta HTML:", "")
     caminho_anexos = st.text_input("Caminho da Pasta de Anexos (opcional):", "")
 
+    # SMTP Settings (Get these from your email provider)
+    remetente = st.text_input("Seu E-mail:", "")
+    senha = st.text_input("Sua Senha/App Password:", "", type="password")  # Use type="password" for security
+    servidor_smtp = st.text_input("Servidor SMTP:", "")
+    porta_smtp = st.number_input("Porta SMTP:", value=587)  # Common port for TLS
+
     if st.button("Iniciar Processamento"):
-        if caminho_excel and caminho_html:
-            enviados, ignorados = processar_emails(caminho_excel, caminho_html, caminho_anexos)
-            st.write(f"Total de e-mails enviados: {enviados}")
-            st.write(f"Total de e-mails ignorados: {ignorados}")
+        if caminho_excel and caminho_html and remetente and senha and servidor_smtp and porta_smtp:
+            processar_emails(caminho_excel, caminho_html,
+                             caminho_excel, caminho_html, caminho_anexos, remetente, senha, servidor_smtp, porta_smtp)
+           else:
+               st.error("Por favor, forneça os caminhos para o arquivo Excel e a pasta HTML.")
 
-            # *** Conditional execution of Outlook functionality ***
-            # This part will only run if you uncomment the email sending
-            # code within processar_emails AND you are running the script
-            # locally where pywin32 is available.
-            #if enviados > 0 and os.name == 'nt':  # 'nt' is Windows
-            #    try:
-            #        st.success("Tentando enviar emails via Outlook...")
-            #        #  The email sending is already handled inside processar_emails
-            #        #  This is just an extra confirmation/attempt
-            #    except Exception as e:
-            #        st.error(f"Erro ao tentar enviar emails via Outlook: {e}")
-            #else:
-            #    st.info("E-mail não enviado via Outlook (ambiente não-Windows ou envio desabilitado).")
-
-        else:
-            st.error("Por favor, forneça os caminhos para o arquivo Excel e a pasta HTML.")
-
-if __name__ == "__main__":
-    main()
+   if __name__ == "__main__":
+       main()
