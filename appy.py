@@ -99,35 +99,10 @@ def detectar_variaveis_completas_template_jinja(template_str):
         variaveis_loop.update(matches)
     return vars_globais, variaveis_loop
 
-def enviar_email_outlook(assunto, destinatarios, corpo_html, anexos=None, remetente="gestao@leveragesec.com.br"):
-    try:
-        outlook = win32com.client.Dispatch("Outlook.Application")
-        email = outlook.CreateItem(0)
-        email.To = ""
-        email.BCC = "; ".join(destinatarios)
-        email.Subject = assunto
-        email.SentOnBehalfOfName = remetente
-        email.HTMLBody = corpo_html
-        if anexos:
-            for anexo in anexos:
-                try:
-                    if os.path.exists(anexo):
-                        email.Attachments.Add(anexo)
-                        logging.info(f"Anexo adicionado: {anexo}")
-                    else:
-                        logging.warning(f"Anexo especificado, mas não encontrado: {anexo}")
-                except Exception as e:
-                    logging.error(f"Erro ao adicionar anexo {anexo}: {e}")
-        else:
-            logging.info("Nenhum anexo especificado.")
-        try:
-            email.Send()
-            logging.info(f"E-mail enviado para: {destinatarios}")
-        except Exception as e:
-            logging.error(f"Erro ao enviar e-mail para {destinatarios}: {e}")
-    except Exception as e:
-        logging.error(f"Erro ao enviar email via Outlook: {e}")
-        st.error("Erro ao enviar email via Outlook. Verifique o log para detalhes.")
+# *** IMPORTANT CHANGE: Removed win32com import and function ***
+# The Outlook functionality is not compatible with Streamlit Cloud.
+# If you need it for local use, keep the original function but
+# conditionally execute it (see main() below).
 
 def deve_enviar_email(data_vencimento, data_hoje, dias_notificacao, recorrencia=None, dias_semana_validos=None):
     datas_notificacao = [data_vencimento - timedelta(days=d) for d in dias_notificacao if d >= 0]
@@ -258,7 +233,7 @@ def processar_emails(caminho_excel, caminho_html, caminho_anexos):
 
             todos_emails = sum([extrair_destinatarios(linha.get("EMAIL", ""), dados_fixos) for _, linha in grupo.iterrows()], [])
             emails_unicos = list({e.lower(): e for e in todos_emails if campo_valido(e)}.values())
-            if not emails_unicos:
+            if not todos_emails:
                 append_log(f"{id_referencia}: sem destinatários válidos. Ignorado.")
                 total_ignorados += 1
                 continue
@@ -290,11 +265,79 @@ def processar_emails(caminho_excel, caminho_html, caminho_anexos):
 
             contexto = {}
             for var in vars_globais:
-                if var.startswith("s."): continue
+                if var.startswith("s."):
+                    continue
                 nome_base, _, sufixo = var.rpartition('_')
                 formato = sufixo.upper() if sufixo.upper() in {'M', 'D', 'S'} else None
                 nome_busca = nome_base if formato else var
                 col_match = next((col for col in linha_exemplo.index if col.strip().lower() == var.lower()), None)
                 if not col_match:
                     col_match = next((col for col in linha_exemplo.index if col.strip().lower().startswith(nome_busca.lower())), None)
-                if not
+                if not col_match:
+                    col_match = next((col for col in dados_fixos if col.strip().lower() == var.lower()), None)
+                if not col_match:
+                    col_match = next((col for col in dados_fixos if col.strip().lower().startswith(nome_busca.lower())), None)
+                valor = linha_exemplo.get(col_match, dados_fixos.get(col_match, '')) if col_match else ''
+                contexto[var] = aplicar_formatacao(valor, formato)  # Corrected indentation
+
+            corpo_html = template.render(contexto)
+
+            anexos_para_email = []
+            if caminho_anexos:
+                for nome_coluna in linha_exemplo.index:
+                    if nome_coluna.upper().startswith("ANEXO"):
+                        nome_arquivo = linha_exemplo.get(nome_coluna)
+                        if campo_valido(nome_arquivo):
+                            caminho_completo = os.path.join(caminho_anexos, nome_arquivo)
+                            if os.path.exists(caminho_completo):
+                                anexos_para_email.append(caminho_completo)
+                            else:
+                                append_log(f"{id_referencia}: anexo não encontrado: {caminho_completo}")
+
+            # *** IMPORTANT CHANGE: Removed email sending ***
+            # The Outlook functionality is not compatible with Streamlit Cloud.
+            # If you need it for local use, uncomment the lines below and
+            # conditionally execute them (see main() below).
+            # try:# try
+            #       enviar_email_outlook(assunto, emails_unicos, corpo_html, anexos_para_email, email_remetente)
+            #       append_log(f"✅ E-mail enviado para: {emails_unicos}")
+            #       total_enviados += 1
+            #   except Exception as e:
+            #       append_log(f"❌ Falha ao enviar e-mail para {emails_unicos}: {e}")
+            #       st.error(f"Erro ao enviar email para {emails_unicos}. Verifique o log.")
+            #       total_ignorados += 1 # Consider failure as ignored for total count
+
+    st.success(f"Processamento concluído. Emails enviados: {total_enviados}, Emails ignorados: {total_ignorados}")
+
+def main():
+    st.title("Processamento de E-mails Automatizado")
+
+    caminho_excel = st.text_input("Caminho do Arquivo Excel:", "")
+    caminho_html = st.text_input("Caminho da Pasta HTML:", "")
+    caminho_anexos = st.text_input("Caminho da Pasta de Anexos (opcional):", "")
+
+    if st.button("Iniciar Processamento"):
+        if caminho_excel and caminho_html:
+            enviados, ignorados = processar_emails(caminho_excel, caminho_html, caminho_anexos)
+            st.write(f"Total de e-mails enviados: {enviados}")
+            st.write(f"Total de e-mails ignorados: {ignorados}")
+
+            # *** Conditional execution of Outlook functionality ***
+            # This part will only run if you uncomment the email sending
+            # code within processar_emails AND you are running the script
+            # locally where pywin32 is available.
+            #if enviados > 0 and os.name == 'nt':  # 'nt' is Windows
+            #    try:
+            #        st.success("Tentando enviar emails via Outlook...")
+            #        #  The email sending is already handled inside processar_emails
+            #        #  This is just an extra confirmation/attempt
+            #    except Exception as e:
+            #        st.error(f"Erro ao tentar enviar emails via Outlook: {e}")
+            #else:
+            #    st.info("E-mail não enviado via Outlook (ambiente não-Windows ou envio desabilitado).")
+
+        else:
+            st.error("Por favor, forneça os caminhos para o arquivo Excel e a pasta HTML.")
+
+if __name__ == "__main__":
+    main()
