@@ -1,3 +1,5 @@
 streamlit
-numpy
-matplotlib
+pandas
+openpyxl  # Para ler arquivos Excel
+jinja2
+pywin32   # Para a interação com o Outlook (funcionará apenas no Windows)
