@@ -3,11 +3,10 @@ import pandas as pd
 import os
 import re
 from datetime import datetime, timedelta
-import win32com.client as win32
-from jinja2 import Template, Environment, meta
+import jinja2
 import logging
 
-# Configuração do logger (para visualização no Streamlit)
+# Configuração do logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def obter_caminho_base():
@@ -48,7 +47,7 @@ def carregar_template_operacao(nome_aba, caminho_html):
             template_str = f.read()
         exige_iteracao = template_exige_iteracao(template_str)
         vars_globais, vars_loop = detectar_variaveis_completas_template_jinja(template_str)
-        return Template(template_str), vars_globais, vars_loop, exige_iteracao
+        return jinja2.Template(template_str), vars_globais, vars_loop, exige_iteracao
     except Exception as e:
         st.error(f"Erro ao carregar template {caminho_template}: {e}")
         return None, None, None, None
@@ -90,9 +89,9 @@ def template_exige_iteracao(template_str):
     return "{{ series" in template_str or "{% for" in template_str
 
 def detectar_variaveis_completas_template_jinja(template_str):
-    env = Environment()
+    env = jinja2.Environment()
     parsed_content = env.parse(template_str)
-    vars_globais = meta.find_undeclared_variables(parsed_content)
+    vars_globais = jinja2.meta.find_undeclared_variables(parsed_content)
     blocos_for = re.findall(r"{%\s*for\s+(\w+)\s+in\s+(\w+)\s*%}(.*?){%\s*endfor\s*%}", template_str, flags=re.DOTALL)
     variaveis_loop = set()
     for var_loop, lista, bloco in blocos_for:
@@ -101,30 +100,34 @@ def detectar_variaveis_completas_template_jinja(template_str):
     return vars_globais, variaveis_loop
 
 def enviar_email_outlook(assunto, destinatarios, corpo_html, anexos=None, remetente="gestao@leveragesec.com.br"):
-    outlook = win32.Dispatch("Outlook.Application")
-    email = outlook.CreateItem(0)
-    email.To = ""
-    email.BCC = "; ".join(destinatarios)
-    email.Subject = assunto
-    email.SentOnBehalfOfName = remetente
-    email.HTMLBody = corpo_html
-    if anexos:
-        for anexo in anexos:
-            try:
-                if os.path.exists(anexo):
-                    email.Attachments.Add(anexo)
-                    logging.info(f"Anexo adicionado: {anexo}")
-                else:
-                    logging.warning(f"Anexo especificado, mas não encontrado: {anexo}")
-            except Exception as e:
-                logging.error(f"Erro ao adicionar anexo {anexo}: {e}")
-    else:
-        logging.info("Nenhum anexo especificado.")
     try:
-        email.Send()
-        logging.info("E-mail enviado para: {destinatarios}")
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        email = outlook.CreateItem(0)
+        email.To = ""
+        email.BCC = "; ".join(destinatarios)
+        email.Subject = assunto
+        email.SentOnBehalfOfName = remetente
+        email.HTMLBody = corpo_html
+        if anexos:
+            for anexo in anexos:
+                try:
+                    if os.path.exists(anexo):
+                        email.Attachments.Add(anexo)
+                        logging.info(f"Anexo adicionado: {anexo}")
+                    else:
+                        logging.warning(f"Anexo especificado, mas não encontrado: {anexo}")
+                except Exception as e:
+                    logging.error(f"Erro ao adicionar anexo {anexo}: {e}")
+        else:
+            logging.info("Nenhum anexo especificado.")
+        try:
+            email.Send()
+            logging.info(f"E-mail enviado para: {destinatarios}")
+        except Exception as e:
+            logging.error(f"Erro ao enviar e-mail para {destinatarios}: {e}")
     except Exception as e:
-        logging.error(f"Erro ao enviar e-mail para {destinatarios}: {e}")
+        logging.error(f"Erro ao enviar email via Outlook: {e}")
+        st.error("Erro ao enviar email via Outlook. Verifique o log para detalhes.")
 
 def deve_enviar_email(data_vencimento, data_hoje, dias_notificacao, recorrencia=None, dias_semana_validos=None):
     datas_notificacao = [data_vencimento - timedelta(days=d) for d in dias_notificacao if d >= 0]
@@ -294,60 +297,4 @@ def processar_emails(caminho_excel, caminho_html, caminho_anexos):
                 col_match = next((col for col in linha_exemplo.index if col.strip().lower() == var.lower()), None)
                 if not col_match:
                     col_match = next((col for col in linha_exemplo.index if col.strip().lower().startswith(nome_busca.lower())), None)
-                if not col_match:
-                    col_match = next((col for col in dados_fixos if col.strip().lower() == var.lower()), None)
-                if not col_match:
-                    col_match = next((col for col in dados_fixos if col.strip().lower().startswith(nome_busca.lower())), None)
-                valor = linha_exemplo.get(col_match, dados_fixos.get(col_match, '')) if col_match else ''
-                contexto[var] = aplicar_formatacao(valor, formato)  # *** Indentation corrected here ***
-
-            corpo_html = template.render(contexto)
-            anexos_para_email = []
-            if caminho_anexos:
-                for nome_coluna in linha_exemplo.index:
-                    if nome_coluna.upper().startswith("ANEXO"):
-                        nome_arquivo = linha_exemplo.get(nome_coluna)
-                        if campo_valido(nome_arquivo):
-                            caminho_completo = os.path.join(caminho_anexos, nome_arquivo)
-                            if os.path.exists(caminho_completo):
-                                anexos_para_email.append(caminho_completo)
-                            else:
-                                append_log(f"{id_referencia}: anexo não encontrado: {caminho_completo}")
-
-            try:
-                enviar_email_outlook(assunto, emails_unicos, corpo_html, anexos_para_email, email_remetente)
-                append_log(f"{id_referencia}: e-mail enviado para {', '.join(emails_unicos)}")
-                total_enviados += 1
-            except Exception as e:
-                append_log(f"{id_referencia}: falha ao enviar e-mail: {e}")
-
-    append_log(f"\n✅ Processo concluído. Total de e-mails enviados: {total_enviados}, total ignorados: {total_ignorados}.")
-    return total_enviados, total_ignorados
-
-def main():
-    st.title("Disparo de E-mails de Cobrança")
-
-    caminho_base = obter_caminho_base()
-    if not caminho_base:
-        return
-
-    MODO = "02. Desenvolvimento"  # Tornar isso configurável via Streamlit se necessário
-    caminho_excel_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "Parametros_Envio_Almox.xlsx")
-    caminho_html_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "HTML")
-    caminho_anexos_padrao = os.path.join(caminho_base, "10. Dados", "03. Envio de e-mails", MODO, "Arquivos para envio")
-
-    caminho_excel = st.sidebar.text_input("Caminho do arquivo Excel:", caminho_excel_padrao)
-    caminho_html = st.sidebar.text_input("Caminho da pasta HTML:", caminho_html_padrao)
-    caminho_anexos = st.sidebar.text_input("Caminho da pasta de anexos (opcional):", caminho_anexos_padrao)
-
-    if st.button("Iniciar Envio de E-mails"):
-        if caminho_excel and os.path.exists(caminho_excel) and caminho_html and os.path.exists(caminho_html):
-            with st.spinner("Processando e enviando e-mails..."):
-                enviados, ignorados = processar_emails(caminho_excel, caminho_html, caminho_anexos)
-            st.success(f"Envio concluído! {enviados} e-mails enviados, {ignorados} operações ignoradas.")
-        else:
-            st.error("Por favor, verifique os caminhos dos arquivos.")
-
-if __name__ == "__main__":
-    main()
-            
+                if not
